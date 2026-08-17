@@ -236,7 +236,7 @@ const BUILTIN_PACKS = [
     {"w":"the person who ... / the thing that ...","kr":"~하는 사람 / ~하는 것","note":"돌려 말하기 도구 ④. 명사를 통째로 만들어낸다."},
     {"w":"the feeling when ...","kr":"~할 때의 느낌","note":"돌려 말하기 도구 ⑤. 모든 감정 단어를 대신한다."},
     {"w":"used for / used to ...","kr":"~에 쓰이는","note":"돌려 말하기 도구 ⑥. 사물 설명."},
-    {"w":"in other words / I mean","kr":"다시 말해 / 제 말은","note":"돌려 말하기 도구 ⑦. 첫 시도가 실패해도 두 번째 기회를 만든다."},
+    {"w":"in other words / I mean ...","kr":"다시 말해 / 제 말은","note":"돌려 말하기 도구 ⑦. 첫 시도가 실패해도 두 번째 기회를 만든다."},
     {"w":"How do you say ...?","kr":"~를 뭐라고 하죠?","note":"돌려 말하기 도구 ⑧. 모른다고 멈추는 대신 상대를 끌어들인다."}
   ],
   "allowed": ["a","about","after","again","ago","all","almost","already","also","always","am","an","and","another","answer","any","anything","are","around","as","ask","asked","at","away","back","bad","be","because","become","been","before","begin","best","better","big","bit","book","both","bring","but","buy","by","call","came","can","car","change","chapter","city","clear","close","coffee","cold","come","country","could","day","days","did","die","different","dinner","do","does","doing","done","down","dream","drink","each","early","easy","eat","editor","end","enough","even","ever","every","everything","example","eye","face","fact","far","fast","feel","feeling","few","find","fine","first","food","for","free","friend","from","full","funny","get","give","go","going","good","got","great","had","half","hand","happen","happy","hard","has","have","he","head","hear","help","her","here","hey","high","him","his","home","hope","hotel","hour","house","how","i","idea","if","in","into","is","it","its","just","keep","kind","know","land","language","last","late","later","learn","leave","less","let","letter","life","like","line","listen","little","live","long","look","lose","lot","loud","love","made","make","man","many","market","may","maybe","me","mean","meet","memory","might","mind","minute","miss","moment","money","month","more","morning","most","mother","move","much","music","must","my","name","near","need","never","new","news","next","nice","night","no","not","nothing","novel","now","of","off","often","oh","ok","old","on","once","one","only","open","opposite","or","other","our","out","over","own","page","paper","part","pay","people","perhaps","person","phone","picture","place","play","please","point","poor","put","question","quiet","quite","read","reader","ready","real","really","reason","remember","right","room","run","sad","said","same","say","school","sea","second","see","seem","sell","send","she","short","should","show","side","simple","since","sit","sleep","slow","small","so","some","someone","something","sometimes","son","soon","sorry","sound","speak","spend","stand","start","stay","still","stop","story","strange","street","strong","such","sure","table","take","talk","teach","tell","than","thank","thanks","that","the","their","them","then","there","these","they","thing","think","this","those","though","time","tired","to","today","together","tomorrow","tonight","too","town","translation","translator","travel","true","try","turn","two","under","understand","until","up","us","use","used","usually","very","wait","walk","want","warm","was","watch","water","way","we","week","well","went","were","what","when","where","which","while","who","whole","why","will","win","window","with","without","woman","word","work","world","would","write","writer","writing","wrong","year","yes","yesterday","yet","you","young","your",
@@ -532,6 +532,57 @@ function weakItems() {
   return out.sort((a, b) => (b.g.fail - a.g.fail) || (a.g.streak - b.g.streak)).slice(0, 25);
 }
 
+/* ================= 단계 팩 검사 · 자동 읽기 ================= */
+function validatePack(o) {
+  const errs = [];
+  if (!o || typeof o !== 'object') return { ok: false, errs: ['JSON 이 아닙니다'] };
+  if (o.schema !== 'plainwords/v1') errs.push('schema 가 "plainwords/v1" 이 아닙니다');
+  if (typeof o.stage !== 'number') errs.push('stage 가 숫자가 아닙니다');
+  ['core', 'allowed', 'patterns', 'paraphrase', 'dialogues', 'topics'].forEach(k => { if (!Array.isArray(o[k])) errs.push(k + ' 배열이 없습니다'); });
+  if (!errs.length) {
+    (o.patterns || []).forEach((p, i) => { if (!p.id || !p.kr || !p.en || !Array.isArray(p.keys)) errs.push('patterns[' + i + '] 형식 오류'); });
+    (o.paraphrase || []).forEach((p, i) => { if (!p.id || !p.term || !p.model || !Array.isArray(p.cover)) errs.push('paraphrase[' + i + '] 형식 오류'); });
+    (o.dialogues || []).forEach((d, i) => { if (!d.id || !Array.isArray(d.turns)) errs.push('dialogues[' + i + '] 형식 오류'); });
+  }
+  return { ok: !errs.length, errs };
+}
+function packIds(p) { return [...(p.patterns || []), ...(p.paraphrase || []), ...(p.topics || []), ...(p.dialogues || [])].map(x => x.id); }
+function dupCount(o) {
+  const mine = new Set();
+  S.packs.filter(p => p.stage !== o.stage).forEach(p => packIds(p).forEach(id => mine.add(id)));
+  return packIds(o).filter(id => mine.has(id)).length;
+}
+
+/* 같은 폴더에 stage2.json, stage3.json … 이 있으면 알아서 읽어 온다.
+   깃허브에 파일 하나만 올려두면 맥이든 아이폰이든 같은 데이터를 본다.
+   파일을 직접 연 경우(file://)에는 브라우저가 막으므로 조용히 건너뛴다. */
+const AUTO = { on: false, found: [], failed: [], ran: false };
+async function autoLoadStages() {
+  AUTO.ran = true;
+  if (!/^https?:$/.test(location.protocol)) return 0;
+  AUTO.on = true;
+  let miss = 0, changed = 0;
+  for (let n = 1; n <= 40 && miss < 3; n++) {
+    let o = null;
+    try {
+      const r = await fetch('stage' + n + '.json', { cache: 'no-store' });
+      if (!r.ok) { miss++; continue; }
+      o = await r.json();
+    } catch (e) { miss++; continue; }
+    miss = 0;
+    const v = validatePack(o);
+    if (!v.ok) { AUTO.failed.push('stage' + n + '.json — ' + v.errs[0]); continue; }
+    if (dupCount(o)) { AUTO.failed.push('stage' + n + '.json — 다른 단계와 id가 겹칩니다'); continue; }
+    AUTO.found.push(o.stage);
+    const i = S.packs.findIndex(p => p.stage === o.stage);
+    const before = i >= 0 ? JSON.stringify(S.packs[i]) : '';
+    if (i >= 0) S.packs[i] = o; else S.packs.push(o);
+    if (JSON.stringify(o) !== before) changed++;
+  }
+  if (changed) save();
+  return changed;
+}
+
 /* ================= 음성 ================= */
 const SRC = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null, recOn = false, micProblem = '';
@@ -621,10 +672,379 @@ function fallbackCopy(text) {
 }
 </script>
 <script>
+/* ================= 포켓북 (아이폰용 단독 파일) 만들기 ================= */
+
+function weakScore(id) {
+  const p = S.progress[id];
+  if (!p || (p.pass + p.fail) === 0) return 2;          /* 아직 안 해본 것 */
+  if (p.streak >= 3) return -5;                          /* 숙달 */
+  return 1 + p.fail * 3 - p.streak;
+}
+
+const isTool = x => /\.\.\./.test(x.w) || /돌려 말하기 도구/.test(x.note || '');
+
+function pocketDeck(c) {
+  const out = [];
+  (c.patterns || []).forEach(p => out.push({
+    id: p.id, tag: '패턴', front: p.kr, sub: '', back: p.en, tip: p.tip || '', w: weakScore(p.id)
+  }));
+  (c.paraphrase || []).forEach(p => out.push({
+    id: p.id, tag: '쉬운 말', front: p.term, sub: (p.kr || '') + ((p.banned || []).length ? '  ·  이 말 없이: ' + p.banned.join(', ') : ''),
+    back: p.model, tip: '어려운 단어 하나를 쓰지 않고 끝까지 가는 것이 목적입니다.', w: weakScore(p.id)
+  }));
+  (c.dialogues || []).forEach(d => (d.turns || []).forEach((t, i) => {
+    if (t.role === 'you') out.push({ id: d.id + '#' + i, tag: '대화', front: t.kr, sub: d.title, back: t.model, tip: '', w: weakScore(d.id) });
+  }));
+  (c.core || []).filter(isTool).forEach((x, i) => out.push({
+    id: 'tool' + i, tag: '도구', front: x.kr, sub: '이걸 영어로 어떻게 시작하죠?', back: x.w, tip: x.note || '', w: 3
+  }));
+  return out.sort((a, b) => b.w - a.w);
+}
+
+function pocketEssay(c) {
+  const tools = (c.core || []).filter(isTool);
+  const plain = (c.core || []).filter(x => !isTool(x) && x.note);
+  const tips = (c.patterns || []).filter(p => p.tip);
+  const H = s => esc(s);
+
+  let h = '';
+  h += '<h2>이 단계를 어떻게 쓸 것인가</h2>';
+  h += '<p class="dek">' + H(c.stage) + '단계 · ' + H(c.title) + '</p>';
+  h += '<p>' + H(c.goal) + '</p>';
+  h += '<p>영어가 막히는 순간은 대개 문법이 무너져서가 아닙니다. <b>단어 하나가 안 떠올라서</b>입니다. ' +
+    '그 한 단어를 기다리는 2초 동안 문장이 무너지고, 무너진 문장을 수습하려다 말 전체를 포기하게 됩니다. ' +
+    '이 단계의 훈련은 그 2초를 없애는 것입니다. 단어를 더 아는 방식이 아니라, <b>없는 단어를 지나쳐 가는 방식</b>으로요.</p>';
+  h += '<p>포켓북은 소리 없이 쓰는 물건입니다. 지하철에서, 줄을 서면서, 엘리베이터에서. 다만 한 가지만 지켜주세요 — ' +
+    '<b>눈으로 읽지 말고 입 모양으로 말하세요.</b> 소리를 내지 않아도 됩니다. 입술과 혀가 움직이기만 하면 됩니다. ' +
+    '눈으로만 읽은 문장은 입으로 나오지 않습니다. 이건 취향의 문제가 아니라 몸의 문제입니다.</p>';
+  h += '<p>카드는 뒤집기 전에 <b>반드시 먼저 시도</b>하세요. 3초 안에 안 나오면 그건 "막힌 것"입니다. ' +
+    '봐서 아는 것과 떠올릴 수 있는 것은 완전히 다른 능력이고, 실전에서 필요한 건 뒤쪽입니다.</p>';
+
+  if (tools.length) {
+    h += '<h2>돌려 말하기 도구</h2>';
+    h += '<p>이 ' + tools.length + '개가 이 앱 전체의 엔진입니다. 모르는 단어가 나왔을 때 멈추는 대신 이 틀 중 하나를 꺼내면, ' +
+      '아는 단어만으로 그 자리를 메울 수 있습니다. 외우려 하지 말고, 하루에 하나씩 실제로 써보세요.</p>';
+    h += '<ol class="tools">';
+    tools.forEach(t => {
+      h += '<li><div class="en">' + H(t.w) + '</div><div class="kr">' + H(t.kr) + '</div>' +
+        (t.note ? '<p>' + H(t.note) + '</p>' : '') + '</li>';
+    });
+    h += '</ol>';
+  }
+
+  if (plain.length) {
+    h += '<h2>단어 하나가 여럿을 대신한다</h2>';
+    h += '<p>아래는 이 단계의 핵심 단어들이 실제로 어떻게 쓰이는지에 대한 메모입니다. 뜻을 외우는 칸이 아니라, <b>쓰임을 보는 칸</b>입니다.</p>';
+    h += '<dl>';
+    plain.forEach(w => { h += '<dt>' + H(w.w) + ' <span>' + H(w.kr) + '</span></dt><dd>' + H(w.note) + '</dd>'; });
+    h += '</dl>';
+  }
+
+  if (tips.length) {
+    h += '<h2>문장을 길게 만드는 법</h2>';
+    h += '<p>짧은 문장은 잘못이 아닙니다. 문제는 짧은 문장 <b>하나로 끝나는 것</b>입니다. ' +
+      '아래 문장들에 붙은 메모는 대부분 "여기서 한 마디 더 붙이는 법"에 관한 것입니다.</p>';
+    h += '<ul class="tips">';
+    tips.forEach(p => { h += '<li><div class="en">' + H(p.en) + '</div><p>' + H(p.tip) + '</p></li>'; });
+    h += '</ul>';
+  }
+
+  if ((c.paraphrase || []).length) {
+    h += '<h2>어려운 말 → 쉬운 말 대조표</h2>';
+    h += '<p>왼쪽은 머릿속에 먼저 떠오르는 말이고, 오른쪽은 <b>입에서 실제로 나올 수 있는 말</b>입니다. ' +
+      '오른쪽을 읽다 보면 어떤 규칙이 보일 겁니다 — 대부분 <i>the ~ who/that/when</i> 으로 명사를 만들고, 감정은 형용사 두 개를 겹쳐 씁니다.</p>';
+    h += '<table class="cmp"><tbody>';
+    (c.paraphrase || []).forEach(p => {
+      h += '<tr><td class="l">' + H(p.term) + '<span>' + H(p.kr || '') + '</span></td><td class="r">' + H(p.model) + '</td></tr>';
+    });
+    h += '</tbody></table>';
+  }
+
+  h += '<h2>실전에서 지킬 다섯 가지</h2><ol class="rules">';
+  h += '<li><b>먼저 양해를 구하고 시작하세요.</b> "My English is not very good, so I\'ll go slowly." 이 한 문장이 상대의 속도를 바꿉니다. 부끄러운 일이 아니라 대화를 설계하는 일입니다.</li>';
+  h += '<li><b>모르면 물어보세요.</b> "How do you say ...?" 는 실력이 아니라 태도를 보여주는 문장입니다. 멈추는 것보다 백 배 낫습니다.</li>';
+  h += '<li><b>because 를 습관으로 만드세요.</b> 이유가 붙는 순간 문장은 두 배가 되고, 상대는 당신이 생각을 가진 사람이라고 느낍니다.</li>';
+  h += '<li><b>실패한 문장을 버리지 말고 고쳐 쓰세요.</b> "I mean ..." 또는 "In other words ..." 로 시작하면 같은 말을 한 번 더 시도할 권리가 생깁니다.</li>';
+  h += '<li><b>답하기 전에 되물으세요.</b> "Let me see if I understand ..." 는 오해를 막으면서 동시에 생각할 시간을 벌어줍니다. 협상 자리에서는 이게 가장 값진 문장입니다.</li>';
+  h += '</ol>';
+  h += '<p class="end">이 해설은 ' + H(c.stage) + '단계 데이터에서 자동으로 만들어졌습니다. 다음 단계를 받으면 그 단계의 해설이 다시 만들어집니다.</p>';
+  return h;
+}
+
+function pocketPayload() {
+  const c = cur();
+  return {
+    stage: c.stage, title: c.title, goal: c.goal,
+    deck: pocketDeck(c),
+    tools: (c.core || []).filter(isTool),
+    core: (c.core || []).filter(x => !isTool(x)),
+    patterns: (c.patterns || []).map(p => ({ id: p.id, kr: p.kr, en: p.en })),
+    paraphrase: (c.paraphrase || []).map(p => ({ id: p.id, term: p.term, kr: p.kr || '', model: p.model })),
+    dialogues: (c.dialogues || []).map(d => ({
+      title: d.title, turns: (d.turns || []).filter(t => t.role === 'you').map(t => ({ kr: t.kr, model: t.model }))
+    })),
+    allowed: c.allowed || [],
+    essay: pocketEssay(c),
+    made: today()
+  };
+}
+
+function pocketHTML() {
+  const json = JSON.stringify(pocketPayload())
+    .replace(/</g, '\\u003c')
+    .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+  return POCKET_TPL.replace('"__DATA__"', json);
+}
+
+const POCKET_TPL = `<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="포켓">
+<meta name="theme-color" content="#faf8f5">
+<title>Plain Words 포켓</title>
+<style>
+:root{--bg:#faf8f5;--card:#fff;--ink:#1c1a17;--dim:#6f6a62;--line:#e6e1d8;--accent:#1f6f5c;--soft:#e6f0ec;--warn:#b4531f;--warnsoft:#fbeee5;}
+html[data-t="dark"]{--bg:#14150f;--card:#1c1e18;--ink:#eae7df;--dim:#9a958a;--line:#2e312a;--accent:#7fc9b0;--soft:#1b2b25;--warn:#e0a06a;--warnsoft:#2e2519}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.65 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif;
+ overscroll-behavior:none;-webkit-font-smoothing:antialiased}
+.serif{font-family:"Iowan Old Style",Georgia,"Nanum Myeongjo","Noto Serif KR",serif}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;touch-action:manipulation;-webkit-user-select:none;user-select:none}
+header{position:sticky;top:0;z-index:9;background:var(--bg);border-bottom:1px solid var(--line);padding-top:env(safe-area-inset-top)}
+.hin{display:flex;align-items:center;gap:10px;padding:11px 16px}
+.hin b{font-size:15px;font-weight:600}
+.hin small{color:var(--dim);font-size:12px}
+.grow{flex:1}
+.ico{width:34px;height:34px;border:1px solid var(--line);border-radius:9px;display:grid;place-items:center;font-size:14px;color:var(--dim)}
+main{padding:0 16px calc(96px + env(safe-area-inset-bottom))}
+nav{position:fixed;left:0;right:0;bottom:0;z-index:10;background:var(--bg);border-top:1px solid var(--line);
+ display:grid;grid-template-columns:1fr 1fr 1fr;padding-bottom:env(safe-area-inset-bottom)}
+nav button{padding:12px 0 13px;font-size:13px;color:var(--dim);display:flex;flex-direction:column;align-items:center;gap:3px}
+nav button i{font-style:normal;font-size:18px;line-height:1}
+nav button.on{color:var(--ink);font-weight:600}
+.prog{height:3px;background:var(--line)}
+.prog i{display:block;height:100%;background:var(--accent);transition:width .3s}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px 20px;margin:16px 0;
+ box-shadow:0 1px 2px rgba(0,0,0,.04),0 10px 30px rgba(0,0,0,.05)}
+.face{min-height:40vh;display:flex;flex-direction:column;justify-content:center;text-align:center;padding:8px 4px}
+.tag{display:inline-block;font-size:11.5px;letter-spacing:.04em;color:var(--accent);background:var(--soft);border-radius:99px;padding:3px 10px;align-self:center;margin-bottom:16px}
+.tag.d{color:var(--warn);background:var(--warnsoft)}
+.q{font-size:25px;line-height:1.45;letter-spacing:-.02em}
+.sub{font-size:13.5px;color:var(--dim);margin-top:10px}
+.a{font-size:24px;line-height:1.5;letter-spacing:-.01em}
+.tip{font-size:13.5px;color:var(--dim);margin-top:16px;line-height:1.6;border-top:1px solid var(--line);padding-top:14px}
+.tapnote{text-align:center;color:var(--dim);font-size:13px;margin-top:-6px}
+.acts{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px}
+.acts button{border:1px solid var(--line);border-radius:12px;padding:15px 0;font-size:16px;background:var(--card)}
+.acts button.ok{background:var(--accent);color:#fff;border-color:var(--accent)}
+html[data-t="dark"] .acts button.ok{color:#0f1410}
+.big{width:100%;border:1px solid var(--line);border-radius:12px;padding:15px 0;font-size:16px;background:var(--card);margin-top:10px}
+.big.fill{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.mini{font-size:13px;color:var(--dim)}
+.center{text-align:center}
+h1{font-size:22px;margin:22px 0 6px;letter-spacing:-.02em}
+.lead{color:var(--dim);font-size:14.5px;margin:0 0 16px}
+input[type=search]{width:100%;font:inherit;font-size:16px;padding:11px 14px;border:1px solid var(--line);border-radius:11px;background:var(--card);color:var(--ink);-webkit-appearance:none}
+.sec{margin:24px 0 8px;font-size:13px;color:var(--dim);letter-spacing:.03em}
+.row{border-bottom:1px solid var(--line);padding:13px 2px}
+.row .k{font-size:15.5px;line-height:1.5}
+.row .e{font-size:16.5px;line-height:1.5;margin-top:4px;font-family:Georgia,"Iowan Old Style",serif;color:var(--accent)}
+.row .e.hide{filter:blur(5.5px);opacity:.6}
+.row .n{font-size:12.5px;color:var(--dim);margin-top:6px;line-height:1.6}
+.chips{line-height:2.2}
+.chips span{border:1px solid var(--line);border-radius:7px;padding:3px 8px;margin:0 5px 5px 0;font-size:13.5px;display:inline-block}
+article{font-size:17px;line-height:1.85}
+article h2{font-size:19px;margin:34px 0 10px;letter-spacing:-.01em}
+article p{margin:0 0 14px}
+article .dek{color:var(--dim);font-size:14px;margin-top:-6px}
+article ol.tools{list-style:none;padding:0;counter-reset:t}
+article ol.tools li{counter-increment:t;border-top:1px solid var(--line);padding:14px 0}
+article ol.tools li:before{content:counter(t);color:var(--accent);font-size:12px;display:block;margin-bottom:4px}
+article ol.tools .en{font-size:19px;font-family:Georgia,serif}
+article ol.tools .kr{color:var(--dim);font-size:14px;margin-bottom:6px}
+article ol.tools p{font-size:14.5px;color:var(--dim);margin:0}
+article dl{margin:0}
+article dt{font-family:Georgia,serif;font-size:17px;margin-top:16px}
+article dt span{font-family:inherit;font-size:13px;color:var(--dim);margin-left:6px}
+article dd{margin:3px 0 0;font-size:14.5px;color:var(--dim)}
+article ul.tips{list-style:none;padding:0}
+article ul.tips li{border-top:1px solid var(--line);padding:13px 0}
+article ul.tips .en{font-family:Georgia,serif;font-size:17px}
+article ul.tips p{font-size:14px;color:var(--dim);margin:4px 0 0}
+article table.cmp{width:100%;border-collapse:collapse}
+article table.cmp td{border-bottom:1px solid var(--line);padding:11px 0;vertical-align:top;font-size:15px}
+article table.cmp .l{width:38%;padding-right:12px}
+article table.cmp .l span{display:block;font-size:12px;color:var(--dim)}
+article table.cmp .r{color:var(--dim);font-family:Georgia,serif}
+article ol.rules li{margin:0 0 12px}
+article .end{font-size:13px;color:var(--dim);margin-top:30px;border-top:1px solid var(--line);padding-top:14px}
+.toast{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--ink);color:var(--bg);
+ padding:9px 16px;border-radius:99px;font-size:13.5px;opacity:0;transition:.25s;pointer-events:none;z-index:20}
+.toast.on{opacity:1}
+@media print{nav,header,.acts,.big{display:none}body{font-size:11pt}main{padding:0}}
+</style>
+</head>
+<body>
+<header>
+  <div class="hin"><b class="serif">Plain Words 포켓</b><small id="stg"></small><span class="grow"></span>
+  <button class="ico" id="th">◐</button></div>
+  <div class="prog"><i id="pg" style="width:0%"></i></div>
+</header>
+<main id="v"></main>
+<nav>
+  <button data-go="card" class="on"><i>◆</i>카드</button>
+  <button data-go="list"><i>≡</i>목록</button>
+  <button data-go="read"><i>¶</i>해설</button>
+</nav>
+<div class="toast" id="ts"></div>
+<script>
+var D = "__DATA__";
+var KEY = 'pw-pocket/' + D.stage;
+var st = load();
+var tab = 'card', SESS = null, hideAll = true;
+
+function load(){ try{ var r = localStorage.getItem(KEY); return r? JSON.parse(r) : {ng:{},ok:{},day:'',theme:'light'}; }catch(e){ return {ng:{},ok:{},day:'',theme:'light'}; } }
+function save(){ try{ localStorage.setItem(KEY, JSON.stringify(st)); }catch(e){} }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+function today(){ return new Date().toISOString().slice(0,10); }
+var tt; function toast(m){ var t=document.getElementById('ts'); t.textContent=m; t.classList.add('on'); clearTimeout(tt); tt=setTimeout(function(){t.classList.remove('on');},1800); }
+function say(s){ if(!window.speechSynthesis) return; try{ speechSynthesis.cancel(); var u=new SpeechSynthesisUtterance(s); u.lang='en-US'; u.rate=.9; speechSynthesis.speak(u);}catch(e){} }
+
+/* ---- 오늘의 묶음 만들기 ---- */
+function newSession(only){
+  var pool = D.deck.slice();
+  if(only === 'ng') pool = pool.filter(function(c){ return st.ng[c.id]; });
+  else {
+    pool.sort(function(a,b){
+      var wa = (st.ng[a.id]?6:0) + a.w - (st.ok[a.id]||0)*2;
+      var wb = (st.ng[b.id]?6:0) + b.w - (st.ok[b.id]||0)*2;
+      return wb - wa || (Math.random()-.5);
+    });
+    pool = pool.slice(0, 24);
+  }
+  for(var i=pool.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=pool[i]; pool[i]=pool[j]; pool[j]=t; }
+  SESS = { q: pool, i: 0, flip: false, done: 0, miss: [], total: pool.length, started: true };
+  st.day = today(); save();
+}
+
+/* ---- 화면 ---- */
+function render(){
+  document.getElementById('stg').textContent = D.stage + '단계';
+  var v = document.getElementById('v');
+  if(tab === 'card') v.innerHTML = vCard();
+  else if(tab === 'list') v.innerHTML = vList();
+  else v.innerHTML = '<article>' + D.essay + '</article>';
+  var p = document.getElementById('pg');
+  p.style.width = (tab === 'card' && SESS && SESS.total ? Math.round(SESS.i / SESS.total * 100) : 0) + '%';
+  window.scrollTo(0,0);
+}
+function vCard(){
+  if(!SESS){
+    var ngn = Object.keys(st.ng).length;
+    return '<h1 class="serif">' + esc(D.title) + '</h1>'
+     + '<p class="lead">' + esc(D.goal) + '</p>'
+     + '<div class="card"><p style="margin:0 0 6px"><b>규칙은 하나입니다.</b></p>'
+     + '<p class="mini" style="margin:0">뒤집기 전에 먼저 시도하세요. 소리는 내지 않아도 됩니다 — 다만 <b>입 모양으로</b> 말해야 합니다. '
+     + '눈으로만 읽은 문장은 입으로 나오지 않습니다. 3초 안에 안 나오면 그건 막힌 것입니다.</p></div>'
+     + '<button class="big fill" data-a="start">오늘의 24장 시작</button>'
+     + (ngn ? '<button class="big" data-a="startng">막혔던 ' + ngn + '장만 다시</button>' : '')
+     + '<p class="mini center" style="margin-top:18px">' + D.deck.length + '장 보유 · ' + esc(D.made) + ' 기준</p>';
+  }
+  if(SESS.i >= SESS.q.length){
+    var m = SESS.miss.length, tot = SESS.total;
+    return '<h1 class="serif">오늘 분량 끝</h1>'
+     + '<div class="card center"><div style="font-size:40px;font-weight:600;letter-spacing:-.03em">' + (tot-m) + ' / ' + tot + '</div>'
+     + '<p class="mini" style="margin:6px 0 0">떠올린 카드</p></div>'
+     + (m ? '<button class="big fill" data-a="again">막힌 ' + m + '장 다시 돌기</button>' : '<p class="center" style="color:var(--accent)">전부 떠올렸습니다.</p>')
+     + '<button class="big" data-a="start">새로 24장 뽑기</button>'
+     + (Object.keys(st.ng).length ? '<button class="big" data-a="code">막힌 목록 복사 (크롬 앱에 붙여넣기)</button>' : '')
+     + '<p class="mini" style="margin-top:16px">복사한 코드를 데스크톱 앱의 <b>약점 복습</b> 탭에 붙여넣으면, 여기서 막힌 것들이 입으로 하는 연습에 먼저 나옵니다.</p>';
+  }
+  var c = SESS.q[SESS.i];
+  var h = '<div class="card" data-a="flip">';
+  if(!SESS.flip){
+    h += '<div class="face"><span class="tag' + (c.tag==='도구'?' d':'') + '">' + esc(c.tag) + '</span>'
+      + '<div class="q serif">' + esc(c.front) + '</div>'
+      + (c.sub ? '<div class="sub">' + esc(c.sub) + '</div>' : '') + '</div></div>'
+      + '<p class="tapnote">입 모양으로 말해본 다음 — 화면을 탭</p>';
+  } else {
+    h += '<div class="face"><span class="tag' + (c.tag==='도구'?' d':'') + '">' + esc(c.tag) + '</span>'
+      + '<div class="a serif">' + esc(c.back) + '</div>'
+      + (c.tip ? '<div class="tip">' + esc(c.tip) + '</div>' : '') + '</div></div>'
+      + '<div class="acts"><button data-a="ng">막혔다</button><button class="ok" data-a="ok">떠올렸다</button></div>'
+      + '<button class="big" data-a="say">♪ 들어보기</button>';
+  }
+  h += '<p class="mini center" style="margin-top:14px">' + (SESS.i+1) + ' / ' + SESS.q.length + '</p>';
+  return h;
+}
+function vList(){
+  var q = (window.__q || '').trim().toLowerCase();
+  function hit(a,b,c){ if(!q) return true; return ((a||'')+' '+(b||'')+' '+(c||'')).toLowerCase().indexOf(q) >= 0; }
+  function row(k,e,n){ return '<div class="row" data-a="peek"><div class="k">' + esc(k) + '</div><div class="e' + (hideAll?' hide':'') + '">' + esc(e) + '</div>'
+    + (n ? '<div class="n">' + esc(n) + '</div>' : '') + '</div>'; }
+  var h = '<h1 class="serif">단어와 표현</h1>'
+   + '<p class="lead">영어 쪽은 흐려져 있습니다. 먼저 떠올린 다음 탭해서 확인하세요.</p>'
+   + '<input type="search" id="q" placeholder="한국어·영어 아무거나 검색" value="' + esc(window.__q||'') + '">'
+   + '<button class="big" data-a="toggle" style="margin-top:10px">' + (hideAll ? '전부 보이기' : '전부 가리기') + '</button>';
+  var tools = D.tools.filter(function(t){ return hit(t.kr,t.w,t.note); });
+  if(tools.length){ h += '<div class="sec">돌려 말하기 도구</div>'; tools.forEach(function(t){ h += row(t.kr, t.w, t.note); }); }
+  var pat = D.patterns.filter(function(p){ return hit(p.kr,p.en); });
+  if(pat.length){ h += '<div class="sec">패턴 문장 ' + pat.length + '</div>'; pat.forEach(function(p){ h += row(p.kr, p.en); }); }
+  var par = D.paraphrase.filter(function(p){ return hit(p.term,p.model,p.kr); });
+  if(par.length){ h += '<div class="sec">쉬운 말로 바꾸기 ' + par.length + '</div>'; par.forEach(function(p){ h += row(p.term + (p.kr?'  ('+p.kr+')':''), p.model); }); }
+  D.dialogues.forEach(function(d){
+    var ts = d.turns.filter(function(t){ return hit(t.kr,t.model); });
+    if(ts.length){ h += '<div class="sec">대화 · ' + esc(d.title) + '</div>'; ts.forEach(function(t){ h += row(t.kr, t.model); }); }
+  });
+  var core = D.core.filter(function(c){ return hit(c.kr,c.w,c.note); });
+  if(core.length){ h += '<div class="sec">핵심 단어</div>'; core.forEach(function(c){ h += row(c.kr, c.w, c.note); }); }
+  if(!q){ h += '<div class="sec">이 단계에서 쓸 수 있는 단어 ' + D.allowed.length + '</div><div class="chips">'
+    + D.allowed.map(function(w){ return '<span>' + esc(w) + '</span>'; }).join('') + '</div>'; }
+  return h;
+}
+
+/* ---- 조작 ---- */
+document.addEventListener('click', function(e){
+  var g = e.target.closest('[data-go]');
+  if(g){ tab = g.dataset.go; [].forEach.call(document.querySelectorAll('[data-go]'), function(b){ b.classList.toggle('on', b.dataset.go===tab); }); render(); return; }
+  if(e.target.id === 'th'){ st.theme = st.theme==='dark'?'light':'dark'; document.documentElement.dataset.t = st.theme; save(); return; }
+  var t = e.target.closest('[data-a]'); if(!t) return;
+  var a = t.dataset.a, c = SESS && SESS.q[SESS.i];
+  if(a === 'start'){ newSession(); render(); }
+  else if(a === 'startng'){ newSession('ng'); render(); }
+  else if(a === 'again'){ var ids = SESS.miss.slice(); SESS = { q: D.deck.filter(function(x){ return ids.indexOf(x.id)>=0; }), i:0, flip:false, done:0, miss:[], total:ids.length, started:true }; render(); }
+  else if(a === 'flip'){ if(SESS && !SESS.flip){ SESS.flip = true; render(); } }
+  else if(a === 'ok'){ delete st.ng[c.id]; st.ok[c.id] = (st.ok[c.id]||0)+1; save(); SESS.i++; SESS.flip=false; render(); }
+  else if(a === 'ng'){ st.ng[c.id] = 1; SESS.miss.push(c.id); save(); SESS.i++; SESS.flip=false; render(); }
+  else if(a === 'say'){ e.stopPropagation(); say(c.back); }
+  else if(a === 'toggle'){ hideAll = !hideAll; render(); }
+  else if(a === 'peek'){ var el = t.querySelector('.e'); if(el) el.classList.toggle('hide'); }
+  else if(a === 'code'){
+    var code = 'PW/' + D.stage + '/' + Object.keys(st.ng).join(',');
+    var ta = document.createElement('textarea'); ta.value = code; ta.style.position='fixed'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.select();
+    if(navigator.clipboard){ navigator.clipboard.writeText(code).then(function(){toast('복사했습니다');},function(){ try{document.execCommand('copy'); toast('복사했습니다');}catch(x){ prompt('아래를 복사하세요', code); } }); }
+    else { try{ document.execCommand('copy'); toast('복사했습니다'); }catch(x){ prompt('아래를 복사하세요', code); } }
+    setTimeout(function(){ ta.remove(); }, 300);
+  }
+});
+document.addEventListener('input', function(e){ if(e.target.id==='q'){ window.__q = e.target.value; var s=e.target.selectionStart; render(); var n=document.getElementById('q'); if(n){ n.focus(); n.setSelectionRange(s,s); } } });
+
+document.documentElement.dataset.t = st.theme || 'light';
+render();
+<\/script>
+</body>
+</html>`;
+</script>
+<script>
 /* ================= 화면 ================= */
 const TABS = [
   ['home', '오늘'], ['words', '핵심 단어'], ['pattern', '패턴 말하기'], ['para', '쉬운 말로'],
-  ['dialog', '실전 대화'], ['talk', '1분 말하기'], ['review', '약점 복습'], ['eval', '평가'], ['next', '다음 단계'], ['set', '설정']
+  ['dialog', '실전 대화'], ['talk', '1분 말하기'], ['review', '약점 복습'], ['eval', '평가'], ['next', '다음 단계'], ['pocket', '포켓북'], ['set', '설정']
 ];
 let TAB = 'home';
 const view = $('#view');
@@ -636,7 +1056,7 @@ function renderTabs() {
   $('#streakBadge').textContent = sd ? sd + '일 연속' : '';
 }
 function go(t) { TAB = t; stopRec(); if (window.speechSynthesis) try { speechSynthesis.cancel(); } catch (e) { } D = null; T = null; DL = null; renderTabs(); render(); window.scrollTo(0, 0); }
-function render() { view.innerHTML = ({ home: vHome, words: vWords, pattern: vDrill, para: vDrill, dialog: vDialog, talk: vTalk, review: vReview, eval: vEval, next: vNext, set: vSet })[TAB](); afterRender(); }
+function render() { view.innerHTML = ({ home: vHome, words: vWords, pattern: vDrill, para: vDrill, dialog: vDialog, talk: vTalk, review: vReview, eval: vEval, next: vNext, pocket: vPocket, set: vSet })[TAB](); afterRender(); }
 function afterRender() { if (TAB === 'pattern' || TAB === 'para' || TAB === 'review') paintDrill(); }
 
 /* ---------- 오늘 ---------- */
@@ -1160,6 +1580,7 @@ ${weak.length ? weak.map(w => `- [${w.t}] ${w.label} — 실패 ${w.g.fail}회`)
   "gate": { "patternMastery": 0.9, "paraphraseMastery": 0.85, "dialogueAll": true, "dialogueMinScore": 80,
             "topicsRequired": 6, "topicMinSeconds": 60, "topicMinWords": 75, "maxHintRate": 0.2, "minReviewStreak": 3 },
   "core": [ { "w": "표제어 또는 표현", "kr": "한국어 뜻", "note": "언제 어떻게 쓰는지 한 줄(한국어). 없으면 빈 문자열" } ],
+  "_core_규칙": "돌려 말하기 도구(문장 틀)는 w 를 'the way that ...' 처럼 ... 으로 끝내고 note 를 '돌려 말하기 도구 ⑨. …' 로 시작하세요. 앱이 이걸로 도구를 구분합니다. 이 키 자체는 출력하지 마세요.",
   "allowed": [ "소문자 단어들" ],
   "patterns": [ { "id": "s${c.stage + 1}p01", "kr": "한국어 문장", "en": "모범 영어 문장",
                   "keys": [ ["동의어1","동의어2"], ["조각2"] ], "tip": "한국어 한 줄 팁" } ],
@@ -1200,6 +1621,25 @@ function vNext() {
     <div class="row" style="margin-top:10px"><button class="btn primary" data-act="import">검사하고 추가</button>
       <span class="small muted" id="importMsg"></span></div>
   </div>
+  <div class="card" style="border-color:${AUTO.on ? 'var(--accent)' : 'var(--line)'}">
+    <b>3. 모든 기기에서 같이 쓰기</b>
+    <p class="small muted" style="margin:8px 0 10px">
+      단계 파일을 깃허브에 올려두면 앱이 <b>알아서 읽어 옵니다.</b> 맥에서 한 번 올리면 아이폰에서도 그대로 열립니다 — 아이폰에서 따로 붙여넣을 필요가 없습니다.
+      (진도 기록은 기기마다 따로 쌓입니다.)
+    </p>
+    <div class="row">
+      <button class="btn" data-act="stagefile">stage${c.stage}.json 내려받기</button>
+      <span class="small muted">→ index.html 옆에 그대로 올리세요</span>
+    </div>
+    <div class="small" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+      ${AUTO.on
+      ? (AUTO.found.length
+        ? `<span class="hit">✓ 자동 읽기 작동 중</span> <span class="muted">— ${AUTO.found.map(s => 'stage' + s + '.json').join(', ')} 을 읽었습니다.</span>`
+        : `<span class="muted">자동 읽기는 켜져 있지만 올려둔 단계 파일이 아직 없습니다.</span>`)
+      : `<span class="muted">지금은 파일을 직접 열어서(file://) 자동 읽기가 꺼져 있습니다. 깃허브 주소로 열면 켜집니다.</span>`}
+      ${AUTO.failed.length ? `<div class="miss" style="margin-top:6px">${AUTO.failed.map(esc).join('<br>')}</div>` : ''}
+    </div>
+  </div>
   <div class="card">
     <b>보유한 단계</b>
     <table style="margin-top:8px"><tr><th>단계</th><th>제목</th><th>구성</th><th></th></tr>
@@ -1217,27 +1657,69 @@ function doImport() {
   if (a < 0 || b < 0) { msg.innerHTML = '<span class="miss">JSON을 찾을 수 없습니다.</span>'; return; }
   let o;
   try { o = JSON.parse(t.slice(a, b + 1)); } catch (e) { msg.innerHTML = '<span class="miss">JSON 형식 오류: ' + esc(e.message) + '</span>'; return; }
-  const errs = [];
-  if (o.schema !== 'plainwords/v1') errs.push('schema 가 "plainwords/v1" 이 아닙니다');
-  if (typeof o.stage !== 'number') errs.push('stage 가 숫자가 아닙니다');
-  ['core', 'allowed', 'patterns', 'paraphrase', 'dialogues', 'topics'].forEach(k => { if (!Array.isArray(o[k])) errs.push(k + ' 배열이 없습니다'); });
-  if (!errs.length) {
-    (o.patterns || []).forEach((p, i) => { if (!p.id || !p.kr || !p.en || !Array.isArray(p.keys)) errs.push('patterns[' + i + '] 형식 오류'); });
-    (o.paraphrase || []).forEach((p, i) => { if (!p.id || !p.term || !p.model || !Array.isArray(p.cover)) errs.push('paraphrase[' + i + '] 형식 오류'); });
-    (o.dialogues || []).forEach((d, i) => { if (!d.id || !Array.isArray(d.turns)) errs.push('dialogues[' + i + '] 형식 오류'); });
-  }
-  if (errs.length) { msg.innerHTML = '<span class="miss">' + esc(errs.slice(0, 4).join(' / ')) + '</span>'; return; }
-  const ids = new Set(); let dup = 0;
-  packs().forEach(p => [...(p.patterns || []), ...(p.paraphrase || []), ...(p.topics || []), ...(p.dialogues || [])].forEach(x => ids.add(x.id)));
-  [...(o.patterns || []), ...(o.paraphrase || []), ...(o.topics || []), ...(o.dialogues || [])].forEach(x => { if (ids.has(x.id)) dup++; });
+  const v = validatePack(o);
+  if (!v.ok) { msg.innerHTML = '<span class="miss">' + esc(v.errs.slice(0, 4).join(' / ')) + '</span>'; return; }
+  const dup = dupCount(o);
   if (dup) { msg.innerHTML = '<span class="miss">id가 ' + dup + '개 겹칩니다. 클로드에게 id를 s' + o.stage + ' 로 시작하게 다시 만들어 달라고 하세요.</span>'; return; }
   const i = S.packs.findIndex(p => p.stage === o.stage);
   if (i >= 0) { if (!confirm(o.stage + '단계가 이미 있습니다. 덮어쓸까요?')) return; S.packs[i] = o; }
   else S.packs.push(o);
   save();
-  msg.innerHTML = '<span class="hit">✓ ' + o.stage + '단계를 추가했습니다.</span>';
+  msg.innerHTML = '<span class="hit">✓ ' + o.stage + '단계를 추가했습니다.</span> 아래 <b>3번</b>에서 파일로 받아 깃허브에 올리면 아이폰에서도 바로 열립니다.';
   toast(o.stage + '단계가 열렸습니다');
-  setTimeout(() => { go('home'); }, 700);
+  renderTabs();
+  setTimeout(() => { render(); }, 900);
+}
+
+/* ---------- 포켓북 ---------- */
+function vPocket() {
+  const c = cur(), deck = pocketDeck(c);
+  const cnt = { p: deck.filter(x => x.tag === '패턴').length, x: deck.filter(x => x.tag === '쉬운 말').length, d: deck.filter(x => x.tag === '대화').length, t: deck.filter(x => x.tag === '도구').length };
+  const weak = deck.filter(x => x.w > 2).length;
+  return `<h1 class="serif">포켓북 만들기</h1>
+  <p class="lead">아이폰에 들고 다닐 <b>단독 파일</b>을 만듭니다. 이 단계의 데이터가 파일 안에 통째로 들어가서, 지하철이나 비행기처럼 인터넷이 없는 곳에서도 열립니다. 소리는 필요 없습니다.</p>
+
+  <div class="card pad-lg">
+    <h3 style="margin-top:0">지금 만들면 이렇게 들어갑니다</h3>
+    <div class="grid2" style="margin-bottom:6px">
+      <div class="stat"><b>${deck.length}<span style="font-size:15px;color:var(--dim)">장</span></b><span>카드 · 패턴 ${cnt.p} / 쉬운 말 ${cnt.x} / 대화 ${cnt.d} / 도구 ${cnt.t}</span></div>
+      <div class="stat"><b>${weak}<span style="font-size:15px;color:var(--dim)">장</span></b><span>약한 것 — 앞쪽에 먼저 나옵니다</span></div>
+    </div>
+    <p class="small muted" style="margin:12px 0 0">
+      <b>카드</b> 한국어를 보고 먼저 떠올린 다음 탭해서 확인 · <b>목록</b> 이 단계의 모든 표현을 영어 쪽을 흐리게 해서 · <b>해설</b> 돌려 말하기 도구와 원리를 읽을거리로.
+      숙달한 항목은 뒤로 밀리고 자주 틀린 항목이 먼저 나옵니다.
+    </p>
+    <div class="row" style="margin-top:16px">
+      <button class="btn accent" data-act="pkmake">포켓북 내려받기</button>
+      <button class="btn" data-act="pkview">먼저 보기</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">아이폰에 넣는 법</h3>
+    <ol class="small" style="margin:0;padding-left:20px;line-height:1.9">
+      <li>내려받은 <code class="inline">pocket.html</code> 을 <b>index.html 과 같은 폴더</b>에 올립니다.</li>
+      <li>아이폰 사파리에서 <code class="inline">…/pocket.html</code> 을 엽니다.</li>
+      <li>공유 → <b>홈 화면에 추가</b>. 아이콘이 하나 더 생깁니다. 크롬 앱과는 별개로 굴러갑니다.</li>
+    </ol>
+    <p class="small muted" style="margin:12px 0 0">다음 단계를 받으면 이 탭에서 <b>다시 만들어 덮어쓰면</b> 됩니다. 카드도 해설도 새 단계 것으로 새로 만들어집니다.</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">포켓북에서 막힌 것 가져오기</h3>
+    <p class="small muted" style="margin:0 0 10px">포켓북 카드가 끝나면 <b>‘막힌 목록 복사’</b> 버튼이 나옵니다. 그 코드를 여기에 붙여넣으면, 눈으로 막혔던 것들이 <b>입으로 하는 연습</b>에서 먼저 나옵니다.</p>
+    <input type="text" id="pkCode" placeholder="PW/1/p03,x12,d2 …">
+    <div class="row" style="margin-top:10px"><button class="btn primary" data-act="pkcode">약점에 반영</button>
+      <span class="small muted" id="pkMsg"></span></div>
+  </div>
+
+  <details><summary>왜 이 형식인가 (읽지 않아도 됩니다)</summary>
+    <div class="small">
+      <p>짧은 틈에 하는 공부에서 가장 흔한 실패는 <b>읽고 넘어가는 것</b>입니다. 눈으로 훑으면 다 아는 것처럼 느껴지지만, 실제로 입을 열면 하나도 안 나옵니다. 그래서 포켓북은 목록이 아니라 <b>가림막</b>으로 만들었습니다. 영어 쪽은 언제나 먼저 가려져 있고, 떠올린 뒤에야 보입니다.</p>
+      <p>소리를 낼 수 없는 곳에서도 <b>입 모양은 움직일 수 있습니다.</b> 소리 없이 입술과 혀를 움직이는 것만으로도, 눈으로만 읽는 것과는 다른 회로가 작동합니다. 앱이 카드마다 이걸 계속 상기시킵니다.</p>
+      <p>PDF로 만들지 않은 이유도 같습니다. PDF는 넘겨볼 수는 있어도 <b>가릴 수가 없습니다.</b> 다만 포켓북에도 인쇄용 서식을 넣어두었으니, 사파리에서 공유 → 프린트로 해설과 목록만 종이에 뽑을 수는 있습니다.</p>
+    </div>
+  </details>`;
 }
 
 /* ---------- 설정 ---------- */
@@ -1342,7 +1824,50 @@ document.addEventListener('click', e => {
   if (a === 'showprompt') { const b = $('#promptBox'); b.style.display = b.style.display === 'none' ? 'block' : 'none'; return; }
   if (a === 'override') { e.preventDefault(); if (confirm('기준을 넘지 않았습니다. 그래도 다음 단계 프롬프트를 열까요?')) { S.unlockedOverride[cur().stage] = true; save(); render(); } return; }
   if (a === 'import') { doImport(); return; }
+  if (a === 'stagefile') {
+    const c2 = cur();
+    const blob = new Blob([JSON.stringify(c2, null, 1)], { type: 'application/json' });
+    const u = URL.createObjectURL(blob), link = document.createElement('a');
+    link.href = u; link.download = 'stage' + c2.stage + '.json'; link.click();
+    setTimeout(() => URL.revokeObjectURL(u), 2000);
+    toast('stage' + c2.stage + '.json 을 내려받았습니다');
+    return;
+  }
   if (a === 'delpack') { if (confirm(v + '단계 데이터를 삭제할까요? 진도 기록은 남습니다.')) { S.packs = S.packs.filter(p => String(p.stage) !== String(v)); save(); render(); renderTabs(); } return; }
+  /* 포켓북 */
+  if (a === 'pkmake' || a === 'pkview') {
+    let html;
+    try { html = pocketHTML(); } catch (err) { toast('포켓북을 만들지 못했습니다: ' + err.message); return; }
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const u = URL.createObjectURL(blob);
+    if (a === 'pkview') { window.open(u, '_blank'); setTimeout(() => URL.revokeObjectURL(u), 60000); }
+    else {
+      const link = document.createElement('a'); link.href = u; link.download = 'pocket.html'; link.click();
+      setTimeout(() => URL.revokeObjectURL(u), 2000);
+      toast('pocket.html 을 내려받았습니다');
+    }
+    return;
+  }
+  if (a === 'pkcode') {
+    const raw = ($('#pkCode') || {}).value || '', msg = $('#pkMsg');
+    const m = raw.trim().match(/PW\/(\d+)\/(.*)$/i);
+    if (!m) { msg.innerHTML = '<span class="miss">코드 형식이 아닙니다. PW/1/… 로 시작해야 합니다.</span>'; return; }
+    const ids = m[2].split(',').map(s => s.trim()).filter(Boolean);
+    let n = 0; const dlgs = new Set();
+    ids.forEach(id => {
+      const base2 = id.split('#')[0];
+      if (/^tool/.test(base2)) return;
+      if ((cur().dialogues || []).some(x => x.id === base2)) { dlgs.add(base2); return; }
+      const known = (cur().patterns || []).some(x => x.id === base2) || (cur().paraphrase || []).some(x => x.id === base2);
+      if (!known) return;
+      const p = P(base2); p.fail++; p.streak = 0; n++;
+    });
+    save();
+    const dtxt = dlgs.size ? ' 대화 ' + dlgs.size + '개는 <b>실전 대화</b> 탭에서 다시 하세요.' : '';
+    msg.innerHTML = (n ? '<span class="hit">✓ ' + n + '개를 약점으로 표시했습니다.</span>' : '<span class="miss">패턴·쉬운말 항목은 없었습니다.</span>') + dtxt;
+    if (n) toast('약점 복습 탭에서 확인하세요');
+    return;
+  }
   /* 설정 */
   if (a === 'mode') { S.settings.inputMode = v; save(); render(); return; }
   if (a === 'export') {
@@ -1397,5 +1922,9 @@ document.documentElement.dataset.theme = S.settings.theme || 'light';
 $('#themeBtn').addEventListener('click', () => { S.settings.theme = S.settings.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = S.settings.theme; save(); if (TAB === 'set') render(); });
 if (!speechOK() && S.settings.inputMode === 'mic') { S.settings.inputMode = 'type'; }
 renderTabs(); render();
+autoLoadStages().then(n => {
+  if (n) { toast(AUTO.found.join(', ') + '단계 파일을 읽었습니다'); renderTabs(); if (TAB === 'home' || TAB === 'next') render(); }
+  else if (TAB === 'next') render();
+}).catch(() => { });
 </script>
 </body></html>
